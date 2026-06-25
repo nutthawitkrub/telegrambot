@@ -29,13 +29,16 @@ jobs:
         env:
           API_KEY: "123456789:AABBCCDDEEFFaabbccddeeff1234567890AB"
           DATA_DIR: "/tmp/tgbot_ci"
+          # Silence pyTelegramBotAPI's connection-reset log noise in CI
+          TELEBOT_DISABLE_LOGGING: "1"
         run: |
           pytest \
             --cov=main \
             --cov=database \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=80
+            --cov-fail-under=80 \
+            -p no:logging
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
