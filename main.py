@@ -635,7 +635,7 @@ def start_tracking(username: str, chat_id: int, started_by: str) -> str:
             stderr=stderr_file,
         )
         if IS_WINDOWS:
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         else:
             popen_kwargs["start_new_session"] = True
 
