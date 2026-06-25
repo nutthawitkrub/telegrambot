@@ -342,6 +342,9 @@ def build_monitor_command(username: str) -> list[str]:
     cmd = ["instagram_monitor", username, "-b", csv_path_for(username).name]
     if SHARED_CONFIG.exists():
         cmd += ["--config-file", str(SHARED_CONFIG)]
+    proxy_url = os.getenv("INSTA_PROXY_URL", "")
+    if proxy_url:
+        cmd += ["--enable-proxy", "--proxy-url", proxy_url]
     return cmd
 
 

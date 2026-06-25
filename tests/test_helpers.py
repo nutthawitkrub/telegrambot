@@ -234,6 +234,19 @@ class TestBuildMonitorCommand:
         cmd = main.build_monitor_command("natgeo")
         assert "--config-file" not in cmd
 
+    def test_proxy_flags_added_when_env_set(self, monkeypatch):
+        monkeypatch.setenv("INSTA_PROXY_URL", "http://user:pass@proxy.example.com:8080")
+        cmd = main.build_monitor_command("natgeo")
+        assert "--enable-proxy" in cmd
+        assert "--proxy-url" in cmd
+        assert "http://user:pass@proxy.example.com:8080" in cmd
+
+    def test_no_proxy_flags_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("INSTA_PROXY_URL", raising=False)
+        cmd = main.build_monitor_command("natgeo")
+        assert "--enable-proxy" not in cmd
+        assert "--proxy-url" not in cmd
+
 
 # ── find_latest_media ─────────────────────────────────────────────────────────
 
