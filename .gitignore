@@ -1,0 +1,25 @@
+# ── secrets & local config ────────────────────────────────────────────────────
+.env
+telegram_monitor.conf
+
+# ── runtime data ──────────────────────────────────────────────────────────────
+monitors/
+active_targets.json
+
+# ── database ──────────────────────────────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# ── test & coverage artifacts ─────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/

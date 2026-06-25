@@ -1,0 +1,12 @@
+[run]
+source = main,database
+omit =
+    tests/*
+    */site-packages/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    \.\.\.
