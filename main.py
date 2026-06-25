@@ -182,22 +182,27 @@ def main_reply_keyboard() -> telebot.types.ReplyKeyboardMarkup:
     return kb
 
 
-def username_picker_keyboard(action_prefix: str) -> telebot.types.InlineKeyboardMarkup | None:
+def username_picker_keyboard(action_prefix: str, chat_id: int | None = None) -> telebot.types.InlineKeyboardMarkup | None:
     """
-    Inline keyboard listing every currently-tracked username, for commands
-    that need one (/stop, /image, /data) when called with no argument.
-    Returns None if nothing is currently tracked - caller decides what to
-    say in that case.
+    Inline keyboard listing targets relevant to this chat.
+    Shows shared targets this chat is subscribed to, plus private targets owned by this chat.
+    Returns None if nothing matches.
     """
     with _targets_lock:
-        usernames = list(_targets.keys())
-    if not usernames:
+        relevant = {
+            k: v for k, v in _targets.items()
+            if chat_id is None or chat_id in v.get("subscribers", {})
+        }
+    if not relevant:
         return None
 
     kb = telebot.types.InlineKeyboardMarkup(row_width=2)
     buttons = [
-        telebot.types.InlineKeyboardButton(f"@{u}", callback_data=f"{action_prefix}:{u}")
-        for u in usernames
+        telebot.types.InlineKeyboardButton(
+            f"@{v.get('username', k)}",
+            callback_data=f"{action_prefix}:{k}"  # key (not username) so stop works for private
+        )
+        for k, v in relevant.items()
     ]
     kb.add(*buttons)
     return kb
@@ -214,8 +219,9 @@ def image_type_keyboard(username: str) -> telebot.types.InlineKeyboardMarkup:
     return kb
 
 
-def target_dir(username: str) -> Path:
-    return MONITORS_DIR / username
+def target_dir(key: str) -> Path:
+    """Return the monitor directory for a target key (username for shared, username_chatid for private)."""
+    return MONITORS_DIR / key
 
 
 def load_persisted_state() -> dict:
@@ -241,31 +247,22 @@ def load_persisted_state() -> dict:
 
 def save_persisted_state() -> None:
     """Sync active targets to DB. Caller must hold _targets_lock."""
-    for username, info in _targets.items():
+    for key, info in _targets.items():
+        ig_username = info.get("username", key)
         for cid, started_by in info.get("subscribers", {}).items():
-            db.upsert_target(username, cid, started_by or "unknown")
+            db.upsert_target(ig_username, cid, started_by or "unknown")
 
 
-def log_path_for(username: str) -> Path:
-    # instagram_monitor writes instagram_monitor_<username>.log into its cwd
-    # by default (single-target mode names the log after the username).
-    return target_dir(username) / f"instagram_monitor_{username}.log"
+def log_path_for(username: str, key: str | None = None) -> Path:
+    return target_dir(key or username) / f"instagram_monitor_{username}.log"
 
 
-def stderr_path_for(username: str) -> Path:
-    """Where we capture the subprocess's stderr, separate from its own log file.
-
-    instagram_monitor's own logger only writes deliberate log lines - an
-    unhandled exception, missing dependency, or auth failure goes to
-    stderr instead and would otherwise be lost (previously sent to
-    DEVNULL), which is why tracking could die with no visible reason.
-    """
-    return target_dir(username) / f"instagram_monitor_{username}.stderr.log"
+def stderr_path_for(username: str, key: str | None = None) -> Path:
+    return target_dir(key or username) / f"instagram_monitor_{username}.stderr.log"
 
 
-def csv_path_for(username: str) -> Path:
-    """Where instagram_monitor's built-in CSV activity export is written."""
-    return target_dir(username) / f"instagram_monitor_{username}.csv"
+def csv_path_for(username: str, key: str | None = None) -> Path:
+    return target_dir(key or username) / f"instagram_monitor_{username}.csv"
 
 
 # Glob patterns instagram_monitor uses for downloaded media, per its docs:
@@ -345,10 +342,10 @@ def build_monitor_command(username: str) -> list[str]:
     return cmd
 
 
-def _broadcast(username: str, text: str) -> None:
-    """Send a message to every chat currently subscribed to `username`."""
+def _broadcast(key: str, text: str) -> None:
+    """Send a message to every chat currently subscribed to the target identified by key."""
     with _targets_lock:
-        info = _targets.get(username)
+        info = _targets.get(key)
         chat_ids = list(info["subscribers"].keys()) if info else []
     for cid in chat_ids:
         try:
@@ -357,7 +354,7 @@ def _broadcast(username: str, text: str) -> None:
             pass
 
 
-def tail_log_and_forward(username: str, log_file: Path, stop_event: threading.Event) -> None:
+def tail_log_and_forward(key: str, log_file: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wait for the log file to appear, then forward every
     line written to it to ALL currently-subscribed chats, until stop_event
@@ -368,14 +365,15 @@ def tail_log_and_forward(username: str, log_file: Path, stop_event: threading.Ev
     open file handle before the folder-deletion step runs (fixes the
     Windows [WinError 32] locked-file error).
     """
+    ig_username = _targets.get(key, {}).get("username", key)
     waited = 0.0
     while not log_file.exists() and not stop_event.is_set():
         stop_event.wait(0.5)
         waited += 0.5
         if waited >= 30:
             _broadcast(
-                username,
-                f"[{username}] Warning: log file not found after 30s "
+                key,
+                f"[{ig_username}] Warning: log file not found after 30s "
                 f"({log_file}). The monitor may have failed to start — "
                 f"check /status.",
             )
@@ -394,22 +392,22 @@ def tail_log_and_forward(username: str, log_file: Path, stop_event: threading.Ev
                 if line:
                     buffer.append(line.rstrip("\n"))
                     if len(buffer) >= 20 or (time.monotonic() - last_flush) > 1.0:
-                        _broadcast(username, "\n".join(f"[{username}] {l}" for l in buffer if l.strip()))
+                        _broadcast(key, "\n".join(f"[{ig_username}] {l}" for l in buffer if l.strip()))
                         try:
                             for ln in buffer:
                                 if ln.strip():
-                                    db.insert_log(username, ln)
+                                    db.insert_log(ig_username, ln)
                         except Exception:
                             pass
                         buffer = []
                         last_flush = time.monotonic()
                 else:
                     if buffer:
-                        _broadcast(username, "\n".join(f"[{username}] {l}" for l in buffer if l.strip()))
+                        _broadcast(key, "\n".join(f"[{ig_username}] {l}" for l in buffer if l.strip()))
                         try:
                             for ln in buffer:
                                 if ln.strip():
-                                    db.insert_log(username, ln)
+                                    db.insert_log(ig_username, ln)
                         except Exception:
                             pass
                         buffer = []
@@ -417,7 +415,7 @@ def tail_log_and_forward(username: str, log_file: Path, stop_event: threading.Ev
                     # Interruptible wait — wakes immediately on stop_event.set()
                     stop_event.wait(1.0)
     except Exception as e:
-        _broadcast(username, f"[{username}] Log tailing stopped due to an error: {e}")
+        _broadcast(key, f"[{ig_username}] Log tailing stopped due to an error: {e}")
 
 
 def all_media_glob_patterns(username: str) -> list[str]:
@@ -478,88 +476,84 @@ def send_media_file(chat_id: int, username: str, media_path: Path, label: str) -
         bot.send_message(chat_id, f"[{username}] Failed to auto-send new {label} file {media_path.name}: {e}")
 
 
-def watch_media_and_forward(username: str, stop_event: threading.Event) -> None:
+def watch_media_and_forward(key: str, stop_event: threading.Event) -> None:
     """
     Background thread: poll the target's directory for new media files and
     push each one to ALL currently-subscribed chats the moment it appears.
     Pre-existing files at watch-start are recorded but NOT sent.
     """
-    tdir = target_dir(username)
+    ig_username = _targets.get(key, {}).get("username", key)
+    tdir = target_dir(key)
     seen: set[str] = set()
 
     # Seed with whatever's already there so startup doesn't dump every old file.
-    for pattern in all_media_glob_patterns(username):
+    for pattern in all_media_glob_patterns(ig_username):
         for p in tdir.glob(pattern):
             seen.add(p.name)
 
     while not stop_event.is_set():
         try:
             if tdir.is_dir():
-                for pattern in all_media_glob_patterns(username):
+                for pattern in all_media_glob_patterns(ig_username):
                     for p in sorted(tdir.glob(pattern), key=lambda p: p.stat().st_mtime):
                         if p.name in seen:
                             continue
                         seen.add(p.name)
                         try:
-                            db.store_media(username, _db_media_type(p.name, username),
+                            db.store_media(ig_username, _db_media_type(p.name, ig_username),
                                            p.name, p.read_bytes())
                         except Exception as e:
                             print(f"Warning: could not store {p.name} in DB: {e}")
-                        label = classify_media_type(p.name, username)
-                        # Fan-out: send to every subscribed chat
+                        label = classify_media_type(p.name, ig_username)
                         with _targets_lock:
-                            info = _targets.get(username)
+                            info = _targets.get(key)
                             chat_ids = list(info["subscribers"].keys()) if info else []
                         for cid in chat_ids:
-                            send_media_file(cid, username, p, label)
+                            send_media_file(cid, ig_username, p, label)
         except Exception as e:
-            print(f"Warning: media watcher for @{username} hit an error: {e}")
+            print(f"Warning: media watcher for @{ig_username} hit an error: {e}")
         stop_event.wait(timeout=5.0)
 
 
-def watch_process_health(username: str, process: subprocess.Popen, stop_event: threading.Event) -> None:
+def watch_process_health(key: str, process: subprocess.Popen, stop_event: threading.Event) -> None:
     """
     Background thread: poll the subprocess for unexpected exit and notify
     Telegram immediately, including exit code and any captured stderr -
     instead of silently leaving the target "stopped" until someone happens
     to run /status.
     """
+    ig_username = _targets.get(key, {}).get("username", key)
     try:
-        print(f"[watchdog] started for @{username} (pid={process.pid})")
+        print(f"[watchdog] started for @{ig_username} (pid={process.pid})")
         while True:
             if stop_event.wait(timeout=3.0):
-                print(f"[watchdog] @{username} stopping cleanly (stop_event set)")
-                return  # stop_tracking() called - this is an intentional stop, stay quiet
+                print(f"[watchdog] @{ig_username} stopping cleanly (stop_event set)")
+                return
             exit_code = process.poll()
             if exit_code is not None:
-                print(f"[watchdog] @{username} detected exit, code={exit_code}")
+                print(f"[watchdog] @{ig_username} detected exit, code={exit_code}")
                 break
 
-        stderr_file = stderr_path_for(username)
+        stderr_file = stderr_path_for(ig_username, key)
         stderr_text = ""
         try:
             if stderr_file.exists():
                 stderr_text = stderr_file.read_text(encoding="utf-8", errors="replace").strip()
         except Exception as e:
-            print(f"Warning: could not read stderr capture for @{username}: {e}")
+            print(f"Warning: could not read stderr capture for @{ig_username}: {e}")
 
-        message = f"🔴 [{username}] instagram_monitor stopped unexpectedly (exit code {exit_code})."
+        message = f"🔴 [@{ig_username}] instagram_monitor stopped unexpectedly (exit code {exit_code})."
         if stderr_text:
-            # Keep just the tail - a traceback's last lines are the useful part,
-            # and this avoids hitting Telegram's message-length limit.
             tail = stderr_text[-1500:]
             message += f"\n\nLast captured output (stderr):\n{tail}"
         else:
             message += "\n\n(No error output was captured.)"
-        message += f"\n\nRun /track or /trackother to restart tracking for @{username}."
+        message += f"\n\nRun /track or /trackother to restart tracking for @{ig_username}."
 
-        # Notify all subscribed chats about the crash
-        _broadcast(username, message)
+        _broadcast(key, message)
 
-        # Mark the target as no-longer-active so /status reflects reality
-        # immediately rather than waiting for the next manual check.
         with _targets_lock:
-            info = _targets.get(username)
+            info = _targets.get(key)
             if info and info["process"] is process:
                 stderr_handle = info.get("stderr_file_handle")
                 if stderr_handle:
@@ -567,52 +561,56 @@ def watch_process_health(username: str, process: subprocess.Popen, stop_event: t
                         stderr_handle.close()
                     except Exception:
                         pass
-                del _targets[username]
+                del _targets[key]
                 try:
-                    db.deactivate_target(username)
-                    db.insert_event(username, "crashed", exit_code,
+                    db.deactivate_target(ig_username)
+                    db.insert_event(ig_username, "crashed", exit_code,
                                     stderr_text[:500] if stderr_text else None)
                 except Exception:
                     pass
     except Exception as e:
-        print(f"CRITICAL: watch_process_health for @{username} crashed: {e}")
+        print(f"CRITICAL: watch_process_health for @{ig_username} crashed: {e}")
         _broadcast(
-            username,
-            f"⚠️ [{username}] The crash-watcher itself hit an internal error "
-            f"({e}). @{username}'s tracking status may be stale — check /status manually.",
+            key,
+            f"⚠️ [{ig_username}] The crash-watcher itself hit an internal error "
+            f"({e}). @{ig_username}'s tracking status may be stale — check /status manually.",
         )
 
 
-def start_tracking(username: str, chat_id: int, started_by: str) -> str:
+def start_tracking(username: str, chat_id: int, started_by: str, shared: bool = True) -> str:
     """
-    Start instagram_monitor for `username`, or subscribe an additional chat
-    to an already-running monitor.  Returns a status message.
+    Start instagram_monitor for `username` and subscribe `chat_id` to its feed.
 
-    One instagram_monitor process runs per username.  Multiple chats can all
-    subscribe to the same process — every log line and new media file is
-    forwarded to every subscriber automatically.
+    shared=True  (/track):      fan-out mode — all chats share one monitor process.
+                                If already running, new chats join the existing feed.
+    shared=False (/trackother): per-chat isolation — each chat runs its own monitor.
+                                Different chats CAN independently track the same username.
     """
+    key = username if shared else f"{username}_{chat_id}"
+
     # ── 1. Quick check under lock ──────────────────────────────────────────
     with _targets_lock:
-        existing = _targets.get(username)
+        existing = _targets.get(key)
         if existing and existing["process"].poll() is None:
             if chat_id in existing["subscribers"]:
                 return f"⚠️ Already tracking @{username} in this chat."
-            # Process is already running — just subscribe this chat to its feed.
-            existing["subscribers"][chat_id] = started_by
-            db.upsert_target(username, chat_id, started_by)
-            return (
-                f"✅ @{username} is already being monitored. "
-                f"This chat has been added to its feed — you'll receive all future "
-                f"log lines and media from now on."
-            )
+            if shared:
+                # Shared mode: subscribe this chat to the running feed.
+                existing["subscribers"][chat_id] = started_by
+                db.upsert_target(username, chat_id, started_by)
+                return (
+                    f"✅ @{username} is already being monitored. "
+                    f"This chat has been added to its feed — you'll receive all future "
+                    f"log lines and media from now on."
+                )
+            # Private mode: key includes chat_id so this branch only fires on exact duplicate.
 
     # ── 2. Slow work WITHOUT holding the lock ──────────────────────────────
-    tdir = target_dir(username)
+    tdir = target_dir(key)
     tdir.mkdir(parents=True, exist_ok=True)
 
-    old_log = log_path_for(username)
-    old_stderr = stderr_path_for(username)
+    old_log = log_path_for(username, key)
+    old_stderr = stderr_path_for(username, key)
     for stale_file in (old_log, old_stderr):
         try:
             stale_file.unlink(missing_ok=True)
@@ -627,7 +625,7 @@ def start_tracking(username: str, chat_id: int, started_by: str) -> str:
         child_env["PYTHONLEGACYWINDOWSSTDIO"] = "1"
 
     try:
-        stderr_file = open(stderr_path_for(username), "wb")
+        stderr_file = open(stderr_path_for(username, key), "wb")
         popen_kwargs = dict(
             cwd=str(tdir),
             env=child_env,
@@ -649,34 +647,33 @@ def start_tracking(username: str, chat_id: int, started_by: str) -> str:
         return f"❌ Failed to start monitor for @{username}: {e}"
 
     stop_event = threading.Event()
-    log_file = log_path_for(username)
+    log_file = log_path_for(username, key)
     log_thread = threading.Thread(
         target=tail_log_and_forward,
-        args=(username, log_file, stop_event),
+        args=(key, log_file, stop_event),
         daemon=True,
     )
     log_thread.start()
 
     media_thread = threading.Thread(
         target=watch_media_and_forward,
-        args=(username, stop_event),
+        args=(key, stop_event),
         daemon=True,
     )
     media_thread.start()
 
     watchdog_thread = threading.Thread(
         target=watch_process_health,
-        args=(username, process, stop_event),
+        args=(key, process, stop_event),
         daemon=True,
     )
     watchdog_thread.start()
 
     # ── 3. Final write under lock — handle race where two users started the ──
-    # same username simultaneously between steps 1 and 3.
+    # same key simultaneously between steps 1 and 3.
     with _targets_lock:
-        existing = _targets.get(username)
+        existing = _targets.get(key)
         if existing and existing["process"].poll() is None:
-            # Another thread won the race — subscribe this chat and discard ours.
             stop_event.set()
             try:
                 process.kill()
@@ -686,14 +683,16 @@ def start_tracking(username: str, chat_id: int, started_by: str) -> str:
                 stderr_file.close()
             except Exception:
                 pass
-            if chat_id not in existing["subscribers"]:
+            if shared and chat_id not in existing["subscribers"]:
                 existing["subscribers"][chat_id] = started_by
             return (
                 f"✅ @{username} is already being monitored. "
                 f"This chat has been added to its feed."
             )
 
-        _targets[username] = {
+        _targets[key] = {
+            "username": username,   # real Instagram username (key may differ for private tracks)
+            "shared": shared,
             "process": process,
             "thread": log_thread,
             "media_thread": media_thread,
@@ -702,29 +701,22 @@ def start_tracking(username: str, chat_id: int, started_by: str) -> str:
             "log_path": log_file,
             "stderr_file_handle": stderr_file,
             "started_at": datetime.now(timezone.utc),
-            "subscribers": {chat_id: started_by},  # chat_id → started_by
+            "subscribers": {chat_id: started_by},
         }
 
     db.upsert_target(username, chat_id, started_by)
     db.insert_event(username, "started")
 
+    mode = "shared" if shared else "private"
     return (
-        f"🚀 Started tracking @{username}. New log lines and downloaded "
+        f"🚀 Started tracking @{username} ({mode}). New log lines and downloaded "
         f"images/videos will appear here automatically."
     )
 
 
-def delete_target_folder(username: str) -> str | None:
-    """
-    Delete monitors/<username>/ entirely (logs, CSV, JSON, downloaded
-    media - everything for that target). Returns an error string if
-    deletion failed/partially failed, or None on success/nothing to delete.
-
-    Called from stop_tracking() only, after the subprocess is confirmed
-    dead - never while instagram_monitor might still have files open
-    (e.g. on Windows, an open file handle can block deletion).
-    """
-    tdir = target_dir(username)
+def delete_target_folder(key: str) -> str | None:
+    """Delete monitors/<key>/ entirely. Returns error string or None."""
+    tdir = target_dir(key)
     if not tdir.exists():
         return None
     try:
@@ -734,41 +726,53 @@ def delete_target_folder(username: str) -> str | None:
         return str(e)
 
 
-def stop_tracking(username: str, chat_id: int) -> str:
+def stop_tracking(username_or_key: str, chat_id: int) -> str:
     """
-    Unsubscribe `chat_id` from `username`'s feed.
+    Unsubscribe `chat_id` from a tracked username.
+
+    Accepts either the plain Instagram username (resolves to private key
+    first, then shared key) or a full target key from callback data.
     The process is only killed when the LAST subscriber stops.
     """
     with _targets_lock:
-        info = _targets.get(username)
+        # Resolve the right key: private key takes priority over shared.
+        private_key = f"{username_or_key}_{chat_id}"
+        if private_key in _targets:
+            key = private_key
+        elif username_or_key in _targets:
+            key = username_or_key
+        else:
+            key = username_or_key  # will fall through to "not tracked" path
+
+        info = _targets.get(key)
+        ig_username = info.get("username", username_or_key) if info else username_or_key
 
         # ── process already dead or never started ──────────────────────────
         if not info or info["process"].poll() is not None:
-            if username in _targets:
+            if key in _targets:
                 stderr_handle = info.get("stderr_file_handle")
                 if stderr_handle:
                     try:
                         stderr_handle.close()
                     except Exception:
                         pass
-                del _targets[username]
-                db.delete_target(username)
-            delete_error = delete_target_folder(username)
+                del _targets[key]
+                db.delete_target(ig_username)
+            delete_error = delete_target_folder(key)
             if delete_error:
                 return (
-                    f"⚠️ @{username} was not being tracked, but its data folder "
+                    f"⚠️ @{ig_username} was not being tracked, but its data folder "
                     f"could not be fully deleted: {delete_error}"
                 )
-            return f"⚠️ @{username} is not currently being tracked. Its data folder (if any) has been removed."
+            return f"⚠️ @{ig_username} is not currently being tracked. Its data folder (if any) has been removed."
 
         # ── remove this subscriber ─────────────────────────────────────────
         info["subscribers"].pop(chat_id, None)
 
         if info["subscribers"]:
-            # Other chats are still subscribed — just unsubscribe this one.
             remaining = len(info["subscribers"])
             return (
-                f"🛑 Stopped updates for @{username} in this chat. "
+                f"🛑 Stopped updates for @{ig_username} in this chat. "
                 f"{remaining} other chat{'s' if remaining != 1 else ''} still tracking."
             )
 
@@ -781,10 +785,9 @@ def stop_tracking(username: str, chat_id: int) -> str:
             info.get("watchdog_thread"),
         ]
         stderr_handle = info.get("stderr_file_handle")
-        del _targets[username]
-        db.delete_target(username)
+        del _targets[key]
+        db.delete_target(ig_username)
 
-    # Kill process outside lock
     try:
         if IS_WINDOWS:
             process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -806,22 +809,18 @@ def stop_tracking(username: str, chat_id: int) -> str:
         except Exception:
             pass
 
-    # Join background threads so they release all open file handles (log,
-    # CSV) before we try to delete the folder.  This is the proper fix for
-    # the Windows [WinError 32] locked-file error — stop_event.wait() in the
-    # tailer means the threads exit within milliseconds of the event being set.
     for t in threads:
         if t and t.is_alive():
             t.join(timeout=5.0)
 
-    delete_error = delete_target_folder(username)
+    delete_error = delete_target_folder(key)
     if delete_error:
         return (
-            f"🛑 Stopped tracking @{username}.\n"
+            f"🛑 Stopped tracking @{ig_username}.\n"
             f"⚠️ Could not fully delete its data folder: {delete_error}\n"
-            f"You may need to delete monitors/{username}/ manually."
+            f"You may need to delete monitors/{key}/ manually."
         )
-    return f"🛑 Stopped tracking @{username} and deleted its data folder."
+    return f"🛑 Stopped tracking @{ig_username} and deleted its data folder."
 
 
 # --------------------------------------------------------------------------
@@ -864,7 +863,7 @@ def cmd_track(message):
     if not DEFAULT_USERNAME:
         bot.reply_to(message, "❌ No INSTAGRAM_USERNAME configured in your .env file.")
         return
-    result = start_tracking(DEFAULT_USERNAME, message.chat.id, describe_sender(message))
+    result = start_tracking(DEFAULT_USERNAME, message.chat.id, describe_sender(message), shared=True)
     bot.reply_to(message, result)
 
 
@@ -886,7 +885,7 @@ def cmd_stop(message):
     _awaiting_username[awaiting_key(message)] = False
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        kb = username_picker_keyboard("stop")
+        kb = username_picker_keyboard("stop", message.chat.id)
         if kb is None:
             bot.reply_to(message, "🟡 Nothing is currently being tracked, so there's nothing to stop.")
             return
@@ -970,7 +969,7 @@ def cmd_image(message):
 
     if len(parts) == 1:
         # No username given at all - offer the picker.
-        kb = username_picker_keyboard("imgsel")
+        kb = username_picker_keyboard("imgsel", message.chat.id)
         if kb is None:
             bot.reply_to(message, "🟡 Nothing is currently being tracked yet.")
             return
@@ -1103,7 +1102,7 @@ def cmd_data(message):
     _awaiting_username[awaiting_key(message)] = False
     parts = message.text.split()
     if len(parts) != 2:
-        kb = username_picker_keyboard("data")
+        kb = username_picker_keyboard("data", message.chat.id)
         if kb is None:
             bot.reply_to(message, "🟡 Nothing is currently being tracked yet.")
             return
@@ -1123,21 +1122,35 @@ def cmd_data(message):
 @bot.message_handler(commands=["status"])
 def cmd_status(message):
     _awaiting_username[awaiting_key(message)] = False
+    chat_id = message.chat.id
     with _targets_lock:
-        if not _targets:
-            bot.reply_to(message, "🟡 No targets are currently being tracked.")
+        relevant = {
+            k: v for k, v in _targets.items()
+            if chat_id in v.get("subscribers", {})
+        }
+        if not relevant:
+            total = len(_targets)
+            if total:
+                bot.reply_to(
+                    message,
+                    f"🟡 You're not tracking anything in this chat.\n"
+                    f"(There are {total} active monitor(s) in other chats.)"
+                )
+            else:
+                bot.reply_to(message, "🟡 No targets are currently being tracked.")
             return
-        lines = ["Currently tracked:"]
-        for username, info in _targets.items():
+        lines = ["Currently tracked in this chat:"]
+        for key, info in relevant.items():
+            ig_username = info.get("username", key)
             alive = info["process"].poll() is None
             icon = "🟢" if alive else "🔴"
-            state = "running" if alive else "stopped (process exited — check /track to resume)"
+            state = "running" if alive else "stopped"
             started = info["started_at"].strftime("%Y-%m-%d %H:%M UTC")
+            mode = "shared" if info.get("shared", True) else "private"
             subs = info.get("subscribers", {})
-            sub_list = ", ".join(str(v) for v in subs.values()) if subs else "unknown"
             lines.append(
-                f"{icon} @{username} — {state} — since {started}\n"
-                f"   👥 {len(subs)} subscriber(s): {sub_list}"
+                f"{icon} @{ig_username} ({mode}) — {state} — since {started}\n"
+                f"   👥 {len(subs)} subscriber(s)"
             )
     bot.reply_to(message, "\n".join(lines))
 
@@ -1211,7 +1224,7 @@ def handle_username_reply(message):
         )
         return
 
-    result = start_tracking(username, message.chat.id, describe_sender(message))
+    result = start_tracking(username, message.chat.id, describe_sender(message), shared=False)
     bot.reply_to(message, result)
 
 
