@@ -161,13 +161,17 @@ class TestStopTracking:
         assert "still tracking" in result.lower() or "subscriber" in result.lower()
 
     def test_private_trackother_independent_per_chat(self, mock_popen, no_threads, mock_bot, monkeypatch):
-        """Private: two chats tracking same username each get their own process."""
+        """Private: two chats tracking same username each get their own _targets entry."""
         monkeypatch.setattr(main, "IS_WINDOWS", True)
         _start(chat_id=10, shared=False)
         _start(chat_id=20, shared=False)   # independent, not fan-out
         assert "natgeo_10" in main._targets
         assert "natgeo_20" in main._targets
-        assert main._targets["natgeo_10"]["process"] is not main._targets["natgeo_20"]["process"]
+        # Each entry subscribes only its own chat — no cross-chat leakage
+        assert 10 in main._targets["natgeo_10"]["subscribers"]
+        assert 20 not in main._targets["natgeo_10"]["subscribers"]
+        assert 20 in main._targets["natgeo_20"]["subscribers"]
+        assert 10 not in main._targets["natgeo_20"]["subscribers"]
 
     def test_private_stop_only_affects_own_chat(self, mock_popen, no_threads, mock_bot, monkeypatch):
         """Private: stopping from chat 10 leaves chat 20's monitor running."""
