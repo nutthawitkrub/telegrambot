@@ -233,13 +233,16 @@ def load_persisted_state() -> dict:
     rows = db.load_active_targets()
     if rows:
         return {r["username"]: {"chat_id": r["chat_id"], "started_by": r["started_by"]}
-                for r in rows}
+                for r in rows if r["chat_id"]}   # skip corrupt chat_id=0 rows
     # First-boot fallback: read the old JSON file if DB is empty
     if not STATE_FILE.exists():
         return {}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        # Filter out entries with missing or zero chat_id (corrupt legacy data)
+        return {k: v for k, v in data.items() if v.get("chat_id")}
     except Exception as e:
         print(f"Warning: could not read {STATE_FILE}: {e}")
         return {}
@@ -1323,13 +1326,14 @@ def resume_persisted_targets() -> None:
     if not saved:
         return
 
-    print(f"Resuming {len(saved)} previously-tracked username(s) from {STATE_FILE}...")
+    print(f"Resuming {len(saved)} previously-tracked username(s)...")
     for username, info in saved.items():
         if not is_valid_username(username):
             continue  # defensively skip anything that got corrupted on disk
         chat_id = info.get("chat_id")
         started_by = info.get("started_by", "someone")
-        if chat_id is None:
+        if not chat_id:   # skip missing, None, or 0 (corrupt legacy data)
+            print(f"Skipping resume for @{username}: no valid chat_id in persisted state")
             continue
         result = start_tracking(username, chat_id, started_by)
         try:
