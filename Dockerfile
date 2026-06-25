@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# Pinned to match the local dev environment exactly.
-# To upgrade: change the patch version here and rebuild.
-FROM python:3.14.5-slim-bookworm
+# Matches the Python version used in CI (tests.yml).
+# 3.12 is the current LTS — stable and well-tested with all dependencies.
+FROM python:3.12-slim-bookworm
 
 # -----------------------------------------------------------------
 # System housekeeping
