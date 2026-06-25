@@ -161,7 +161,7 @@ class TestKeyboards:
         from unittest.mock import MagicMock
         proc = MagicMock()
         proc.poll.return_value = None
-        main._targets["fakeuser"] = {"process": proc, "subscribers": {1: "tester"}, "stop_event": __import__("threading").Event()}
+        main._targets["fakeuser"] = {"username": "fakeuser", "shared": True, "process": proc, "subscribers": {1: "tester"}, "stop_event": __import__("threading").Event()}
         kb = main.username_picker_keyboard("stop")
         assert kb is not None
 

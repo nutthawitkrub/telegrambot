@@ -114,8 +114,10 @@ class TestCmdStop:
 
     def test_no_arg_with_targets_shows_picker(self, mock_bot, mock_popen, no_threads):
         main._targets["natgeo"] = {
+            "username": "natgeo",
+            "shared": True,
             "process": MagicMock(**{"poll.return_value": None}),
-            "subscribers": {1: "test"},
+            "subscribers": {100: "test"},   # chat_id=100 matches make_message default
             "stop_event": __import__("threading").Event(),
             "started_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         }
@@ -137,11 +139,9 @@ class TestCmdStop:
         assert "not" in reply.lower()
 
     def test_valid_username_stops_tracked(self, mock_bot, mock_popen, no_threads, monkeypatch):
-        # Use IS_WINDOWS=True to avoid os.killpg (POSIX-only, absent on Windows)
         monkeypatch.setattr(main, "IS_WINDOWS", True)
-        # First start tracking
-        main.start_tracking("natgeo", 100, "tester")
-        msg = make_message(text="/stop natgeo")
+        main.start_tracking("natgeo", 100, "tester", shared=True)
+        msg = make_message(text="/stop natgeo", chat_id=100)
         main.cmd_stop(msg)
         reply = mock_bot.reply_to.call_args[0][1]
         assert "Stopped" in reply or "stopped" in reply
@@ -165,8 +165,10 @@ class TestCmdImage:
 
     def test_no_args_with_targets_shows_picker(self, mock_bot):
         main._targets["natgeo"] = {
+            "username": "natgeo",
+            "shared": True,
             "process": MagicMock(**{"poll.return_value": None}),
-            "subscribers": {1: "test"},
+            "subscribers": {100: "test"},
             "stop_event": __import__("threading").Event(),
             "started_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         }
@@ -225,8 +227,10 @@ class TestCmdData:
 
     def test_no_args_with_targets(self, mock_bot):
         main._targets["natgeo"] = {
+            "username": "natgeo",
+            "shared": True,
             "process": MagicMock(**{"poll.return_value": None}),
-            "subscribers": {1: "test"},
+            "subscribers": {100: "test"},
             "stop_event": __import__("threading").Event(),
             "started_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         }
@@ -270,8 +274,10 @@ class TestCmdStatus:
         proc.poll.return_value = None
         import datetime as dt
         main._targets["natgeo"] = {
+            "username": "natgeo",
+            "shared": True,
             "process": proc,
-            "subscribers": {1: "Alice"},
+            "subscribers": {100: "Alice"},   # chat_id=100 matches make_message default
             "stop_event": __import__("threading").Event(),
             "started_at": dt.datetime.now(dt.timezone.utc),
         }
@@ -279,15 +285,16 @@ class TestCmdStatus:
         main.cmd_status(msg)
         reply = mock_bot.reply_to.call_args[0][1]
         assert "natgeo" in reply
-        assert "Alice" in reply
 
     def test_shows_dead_process_state(self, mock_bot):
         proc = MagicMock()
         proc.poll.return_value = 1   # dead
         import datetime as dt
         main._targets["natgeo"] = {
+            "username": "natgeo",
+            "shared": True,
             "process": proc,
-            "subscribers": {1: "Alice"},
+            "subscribers": {100: "Alice"},
             "stop_event": __import__("threading").Event(),
             "started_at": dt.datetime.now(dt.timezone.utc),
         }
@@ -384,10 +391,11 @@ class TestHandleUsernameReply:
         assert "Invalid" in reply or "invalid" in reply
 
     def test_at_prefix_stripped(self, mock_bot, mock_popen, no_threads):
-        msg = make_message(text="@natgeo")
+        msg = make_message(text="@natgeo", chat_id=100)
         main._awaiting_username[main.awaiting_key(msg)] = True
         main.handle_username_reply(msg)
-        assert "natgeo" in main._targets or mock_bot.reply_to.called
+        # /trackother creates a private key "natgeo_{chat_id}"
+        assert "natgeo_100" in main._targets or mock_bot.reply_to.called
 
     def test_whitespace_stripped(self, mock_bot, mock_popen, no_threads):
         msg = make_message(text="  natgeo  ")

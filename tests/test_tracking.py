@@ -12,9 +12,9 @@ CHAT_ID = 123
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _start(username="natgeo", chat_id=CHAT_ID, started_by="Alice"):
-    """Convenience wrapper: start tracking with default mocks."""
-    return main.start_tracking(username, chat_id, started_by)
+def _start(username="natgeo", chat_id=CHAT_ID, started_by="Alice", shared=True):
+    """Convenience wrapper: start tracking (shared=True by default matches /track behaviour)."""
+    return main.start_tracking(username, chat_id, started_by, shared=shared)
 
 
 def _stop(username="natgeo", chat_id=CHAT_ID):
@@ -109,9 +109,9 @@ class TestStartTracking:
 
 class TestStopTracking:
     def _tracked(self, mock_popen, no_threads, mock_bot, monkeypatch, username="natgeo"):
-        """Set up a live tracked target and return the mock process."""
+        """Set up a live shared-mode tracked target and return the mock process."""
         monkeypatch.setattr(main, "IS_WINDOWS", True)
-        _start(username=username)
+        _start(username=username, shared=True)
         return mock_popen[1]
 
     def test_success_message(self, mock_popen, no_threads, mock_bot, monkeypatch):
@@ -150,16 +150,33 @@ class TestStopTracking:
         assert "natgeo" not in main._targets
 
     def test_second_subscriber_unsubscribes_only(self, mock_popen, no_threads, mock_bot, monkeypatch):
-        """When two chats track and one stops, the process keeps running."""
+        """Shared: when two chats track and one stops, the process keeps running."""
         monkeypatch.setattr(main, "IS_WINDOWS", True)
-        _start(chat_id=10)
-        _start(chat_id=20)   # joins existing feed
+        _start(chat_id=10, shared=True)
+        _start(chat_id=20, shared=True)   # joins existing shared feed
         result = main.stop_tracking("natgeo", 10)
-        # natgeo still tracked by chat 20
         assert "natgeo" in main._targets
         assert 10 not in main._targets["natgeo"]["subscribers"]
         assert 20 in main._targets["natgeo"]["subscribers"]
         assert "still tracking" in result.lower() or "subscriber" in result.lower()
+
+    def test_private_trackother_independent_per_chat(self, mock_popen, no_threads, mock_bot, monkeypatch):
+        """Private: two chats tracking same username each get their own process."""
+        monkeypatch.setattr(main, "IS_WINDOWS", True)
+        _start(chat_id=10, shared=False)
+        _start(chat_id=20, shared=False)   # independent, not fan-out
+        assert "natgeo_10" in main._targets
+        assert "natgeo_20" in main._targets
+        assert main._targets["natgeo_10"]["process"] is not main._targets["natgeo_20"]["process"]
+
+    def test_private_stop_only_affects_own_chat(self, mock_popen, no_threads, mock_bot, monkeypatch):
+        """Private: stopping from chat 10 leaves chat 20's monitor running."""
+        monkeypatch.setattr(main, "IS_WINDOWS", True)
+        _start(chat_id=10, shared=False)
+        _start(chat_id=20, shared=False)
+        main.stop_tracking("natgeo", 10)
+        assert "natgeo_10" not in main._targets
+        assert "natgeo_20" in main._targets
 
     def test_sigterm_timeout_escalates_to_kill(self, mock_popen, no_threads, mock_bot, monkeypatch):
         """If process.wait() raises TimeoutExpired, process.kill() should be called."""

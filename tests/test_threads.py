@@ -30,9 +30,11 @@ def _one_shot_stop_event():
     return ev
 
 
-def _make_target_entry(proc, stop_event, chat_id=100):
-    """Build a _targets dict entry using the new subscribers structure."""
+def _make_target_entry(proc, stop_event, chat_id=100, username="natgeo"):
+    """Build a _targets dict entry with username and subscribers fields."""
     return {
+        "username": username,
+        "shared": True,
         "process": proc,
         "stop_event": stop_event,
         "stderr_file_handle": None,
