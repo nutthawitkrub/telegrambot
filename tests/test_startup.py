@@ -147,7 +147,9 @@ class TestResumePersistedTargets:
     def test_resumes_from_db(self, mock_bot, mock_popen, no_threads):
         db.upsert_target("natgeo", 100, "Alice")
         main.resume_persisted_targets()
-        assert "natgeo" in main._targets
+        # Resume is per-device: key is username_chatid, matching a fresh /track.
+        assert "natgeo_100" in main._targets
+        assert "natgeo" not in main._targets
         mock_bot.send_message.assert_called()
 
     def test_sends_resume_message(self, mock_bot, mock_popen, no_threads):
@@ -167,7 +169,7 @@ class TestResumePersistedTargets:
         state = {"natgeo": {"chat_id": 55, "started_by": "Bob"}}
         main.STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
         main.resume_persisted_targets()
-        assert "natgeo" in main._targets
+        assert "natgeo_55" in main._targets
 
     def test_skips_invalid_usernames(self, mock_bot, mock_popen, no_threads):
         """Corrupted/invalid usernames in persisted state are skipped."""
@@ -187,7 +189,7 @@ class TestResumePersistedTargets:
         db.upsert_target("natgeo", 100, "Alice")
         mock_bot.send_message.side_effect = Exception("Telegram down")
         main.resume_persisted_targets()   # must not raise
-        assert "natgeo" in main._targets
+        assert "natgeo_100" in main._targets
 
 
 # ── load_persisted_state ──────────────────────────────────────────────────────

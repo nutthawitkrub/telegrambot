@@ -827,7 +827,7 @@ def stop_tracking(username_or_key: str, chat_id: int) -> str:
         return (
             f"🛑 Stopped tracking @{ig_username}.\n"
             f"⚠️ Could not fully delete its data folder: {delete_error}\n"
-            f"You may need to delete monitors/{key}/ manually."
+            f"You may need to delete its monitor folder manually."
         )
     return f"🛑 Stopped tracking @{ig_username} and deleted its data folder."
 
@@ -1354,7 +1354,10 @@ def resume_persisted_targets() -> None:
         if not chat_id:   # skip missing, None, or 0 (corrupt legacy data)
             print(f"Skipping resume for @{username}: no valid chat_id in persisted state")
             continue
-        result = start_tracking(username, chat_id, started_by)
+        # Resume in per-device mode (shared=False) so the key matches what a
+        # fresh /track or /trackother produces — otherwise the same account
+        # would come back under a different key after a redeploy.
+        result = start_tracking(username, chat_id, started_by, shared=False)
         try:
             bot.send_message(
                 chat_id,
