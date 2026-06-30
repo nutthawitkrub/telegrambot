@@ -209,12 +209,16 @@ def username_picker_keyboard(action_prefix: str, chat_id: int | None = None) -> 
 
 
 def image_type_keyboard(username: str) -> telebot.types.InlineKeyboardMarkup:
-    """Inline keyboard for picking profile/post/story, once a username is chosen for /image."""
-    kb = telebot.types.InlineKeyboardMarkup(row_width=3)
+    """Inline keyboard for picking profile/post, once a username is chosen for /image.
+
+    Story is intentionally omitted: instagram_monitor runs anonymously (Mode 1),
+    and Instagram only serves stories to logged-in sessions, so a Story button
+    would always return "nothing found".
+    """
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         telebot.types.InlineKeyboardButton("Profile", callback_data=f"img:{username}:profile"),
         telebot.types.InlineKeyboardButton("Post", callback_data=f"img:{username}:post"),
-        telebot.types.InlineKeyboardButton("Story", callback_data=f"img:{username}:story"),
     )
     return kb
 
@@ -869,7 +873,20 @@ def cmd_track(message):
     if not DEFAULT_USERNAME:
         bot.reply_to(message, "❌ No INSTAGRAM_USERNAME configured in your .env file.")
         return
-    result = start_tracking(DEFAULT_USERNAME, message.chat.id, describe_sender(message), shared=True)
+
+    chat_id = message.chat.id
+    # /track is per-device (each chat gets its OWN monitor, key = username_chatid)
+    # AND restarts on re-run: running /track again tears the existing monitor
+    # down and starts a fresh one.
+    key = f"{DEFAULT_USERNAME}_{chat_id}"
+    with _targets_lock:
+        retracking = key in _targets
+    if retracking:
+        stop_tracking(DEFAULT_USERNAME, chat_id)
+
+    result = start_tracking(DEFAULT_USERNAME, chat_id, describe_sender(message), shared=False)
+    if retracking:
+        result = "♻️ Re-tracking (fresh restart).\n" + result
     bot.reply_to(message, result)
 
 

@@ -165,9 +165,12 @@ class TestKeyboards:
         kb = main.username_picker_keyboard("stop")
         assert kb is not None
 
-    def test_image_type_keyboard_has_three_buttons(self):
+    def test_image_type_keyboard_has_profile_and_post_only(self):
         kb = main.image_type_keyboard("natgeo")
         assert kb is not None
+        labels = [btn.text for row in kb.keyboard for btn in row]
+        assert labels == ["Profile", "Post"]
+        assert "Story" not in labels
 
 
 # ── path helpers ──────────────────────────────────────────────────────────────

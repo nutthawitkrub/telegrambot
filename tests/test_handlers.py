@@ -73,6 +73,32 @@ class TestCmdTrack:
         main.cmd_track(msg)
         assert not main._awaiting_username.get(main.awaiting_key(msg))
 
+    def test_creates_per_device_key(self, monkeypatch, mock_bot, mock_popen, no_threads):
+        """/track is per-device: key is DEFAULT_USERNAME_<chat_id>, not the bare username."""
+        monkeypatch.setattr(main, "DEFAULT_USERNAME", "natgeo")
+        msg = make_message(text="/track", chat_id=100)
+        main.cmd_track(msg)
+        assert "natgeo_100" in main._targets
+        assert "natgeo" not in main._targets   # NOT the old shared key
+
+    def test_two_devices_independent(self, monkeypatch, mock_bot, mock_popen, no_threads):
+        """Two chats running /track each get their own monitor; both run at once."""
+        monkeypatch.setattr(main, "DEFAULT_USERNAME", "natgeo")
+        main.cmd_track(make_message(text="/track", chat_id=100))
+        main.cmd_track(make_message(text="/track", chat_id=200))
+        assert "natgeo_100" in main._targets
+        assert "natgeo_200" in main._targets
+
+    def test_retrack_restarts_fresh(self, monkeypatch, mock_bot, mock_popen, no_threads):
+        """Running /track again on the same device re-tracks (fresh restart)."""
+        monkeypatch.setattr(main, "DEFAULT_USERNAME", "natgeo")
+        monkeypatch.setattr(main, "IS_WINDOWS", True)
+        main.cmd_track(make_message(text="/track", chat_id=100))
+        main.cmd_track(make_message(text="/track", chat_id=100))
+        reply = mock_bot.reply_to.call_args[0][1]
+        assert "Re-tracking" in reply or "re-track" in reply.lower()
+        assert "natgeo_100" in main._targets
+
 
 # ── /trackother ───────────────────────────────────────────────────────────────
 

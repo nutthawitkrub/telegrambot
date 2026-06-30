@@ -46,3 +46,10 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+      # Lint the container entrypoint shell script (shellcheck is preinstalled
+      # on GitHub's ubuntu runners). Catches quoting/portability bugs in
+      # start.sh before they ship in the Docker image.
+      - name: Lint start.sh
+        if: always()
+        run: shellcheck start.sh
