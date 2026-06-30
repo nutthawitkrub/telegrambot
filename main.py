@@ -717,9 +717,8 @@ def start_tracking(username: str, chat_id: int, started_by: str, shared: bool = 
     db.upsert_target(username, chat_id, started_by)
     db.insert_event(username, "started")
 
-    mode = "shared" if shared else "private"
     return (
-        f"🚀 Started tracking @{username} ({mode}). New log lines and downloaded "
+        f"🚀 Started tracking @{username}. New log lines and downloaded "
         f"images/videos will appear here automatically."
     )
 
@@ -1169,11 +1168,11 @@ def cmd_status(message):
             icon = "🟢" if alive else "🔴"
             state = "running" if alive else "stopped"
             started = info["started_at"].strftime("%Y-%m-%d %H:%M UTC")
-            mode = "shared" if info.get("shared", True) else "private"
             subs = info.get("subscribers", {})
+            names = ", ".join(str(n) for n in subs.values()) or "—"
             lines.append(
-                f"{icon} @{ig_username} ({mode}) — {state} — since {started}\n"
-                f"   👥 {len(subs)} subscriber(s)"
+                f"{icon} @{ig_username} — {state} — since {started}\n"
+                f"   👥 {len(subs)} subscriber(s): {names}"
             )
     bot.reply_to(message, "\n".join(lines))
 

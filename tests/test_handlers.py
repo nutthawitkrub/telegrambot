@@ -311,6 +311,7 @@ class TestCmdStatus:
         main.cmd_status(msg)
         reply = mock_bot.reply_to.call_args[0][1]
         assert "natgeo" in reply
+        assert "Alice" in reply   # subscriber name revealed, not just the count
 
     def test_shows_dead_process_state(self, mock_bot):
         proc = MagicMock()
