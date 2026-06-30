@@ -287,3 +287,44 @@ class TestFindLatestMedia:
         new.write_bytes(b"new")
         result = main.find_latest_media("natgeo", "post")
         assert result == new
+
+    def test_per_device_key_finds_file_in_key_folder(self, tmp_path):
+        """File named with clean username lives in the key folder; pass key to find it."""
+        import main as m
+        m.MONITORS_DIR = tmp_path / "monitors"
+        d = m.MONITORS_DIR / "natgeo_100"          # per-device folder
+        d.mkdir(parents=True)
+        f = d / "instagram_natgeo_profile_pic.jpg"  # named with clean username
+        f.write_bytes(b"pic")
+        # Without key → wrong folder (monitors/natgeo) → not found
+        assert main.find_latest_media("natgeo", "profile") is None
+        # With key → correct folder → found
+        assert main.find_latest_media("natgeo", "profile", key="natgeo_100") == f
+
+
+# ── resolve_username_and_key ──────────────────────────────────────────────────
+
+class TestResolveUsernameAndKey:
+    def test_plain_username_no_target(self):
+        # Unknown identifier, no live target → returns it unchanged for both.
+        assert main.resolve_username_and_key("natgeo", 100) == ("natgeo", "natgeo")
+
+    def test_key_identifier_resolves_clean_username(self, mock_popen, no_threads):
+        from unittest.mock import MagicMock
+        proc = MagicMock(); proc.poll.return_value = None
+        main._targets["natgeo_100"] = {
+            "username": "natgeo", "shared": False, "process": proc,
+            "subscribers": {100: "t"}, "stop_event": __import__("threading").Event(),
+        }
+        # Identifier IS the key → clean username extracted, key preserved.
+        assert main.resolve_username_and_key("natgeo_100", 100) == ("natgeo", "natgeo_100")
+
+    def test_typed_username_prefers_per_device_key(self, mock_popen, no_threads):
+        from unittest.mock import MagicMock
+        proc = MagicMock(); proc.poll.return_value = None
+        main._targets["natgeo_100"] = {
+            "username": "natgeo", "shared": False, "process": proc,
+            "subscribers": {100: "t"}, "stop_event": __import__("threading").Event(),
+        }
+        # Typed plain username → resolves to this chat's per-device key folder.
+        assert main.resolve_username_and_key("natgeo", 100) == ("natgeo", "natgeo_100")

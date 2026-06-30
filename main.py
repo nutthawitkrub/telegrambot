@@ -300,9 +300,14 @@ def media_glob_patterns(username: str, image_type: str) -> list[str]:
     return []
 
 
-def find_latest_media(username: str, image_type: str) -> Path | None:
-    """Find the most recently modified downloaded media file of the given type."""
-    tdir = target_dir(username)
+def find_latest_media(username: str, image_type: str, key: str | None = None) -> Path | None:
+    """Find the most recently modified downloaded media file of the given type.
+
+    Files are named with the clean Instagram `username`, but for per-device
+    tracking they live in the `key` folder (username_chatid). Pass `key` to look
+    in the right folder; it defaults to `username` for the legacy/shared layout.
+    """
+    tdir = target_dir(key if key else username)
     if not tdir.is_dir():
         return None
 
@@ -926,14 +931,38 @@ def cmd_stop(message):
     bot.reply_to(message, stop_tracking(username, message.chat.id))
 
 
-def deliver_image(chat_id: int, username: str, image_type: str) -> str | None:
+def resolve_username_and_key(identifier: str, chat_id: int) -> tuple[str, str]:
     """
-    Send the latest media of image_type for username to chat_id.
+    Map an identifier (which may be a clean username OR a per-device key) to
+    (clean_username, folder_key).
+
+    - From the img:/imgsel:/data: buttons the identifier is the target KEY.
+    - From a typed command it's the plain username the user wrote.
+    The folder key is what target_dir() needs; the clean username is what the
+    DB, glob patterns, and user-facing text need.
+    """
+    with _targets_lock:
+        if identifier in _targets:
+            return _targets[identifier].get("username", identifier), identifier
+        per_device = f"{identifier}_{chat_id}"
+        if per_device in _targets:
+            return identifier, per_device
+    return identifier, identifier
+
+
+def deliver_image(chat_id: int, identifier: str, image_type: str) -> str | None:
+    """
+    Send the latest media of image_type to chat_id.
     Serves from the database BLOB first; falls back to disk if not yet stored.
     Returns an error/status string on failure, or None on success.
 
+    `identifier` may be a clean username (typed command) or a per-device key
+    (inline button); resolve_username_and_key() normalises both.
+
     Shared between cmd_image (typed command) and the img: callback button.
     """
+    username, key = resolve_username_and_key(identifier, chat_id)
+
     # Try database first
     result = db.get_latest_media(username, image_type)
     if result is not None:
@@ -957,7 +986,7 @@ def deliver_image(chat_id: int, username: str, image_type: str) -> str | None:
             return f"❌ Failed to send media for @{username}: {e}"
 
     # Fall back to disk (e.g. file downloaded but DB write failed)
-    media_path = find_latest_media(username, image_type)
+    media_path = find_latest_media(username, image_type, key=key)
     if media_path is None:
         return (
             f"⚠️ No {image_type} image found yet for @{username}. "
@@ -1198,18 +1227,22 @@ def handle_callback_query(call):
                 bot.send_message(chat_id, result)
 
         elif data.startswith("imgsel:"):
-            # Username chosen for /image, but type not yet - show the type picker.
-            username = data[len("imgsel:"):]
+            # Target chosen for /image, but type not yet - show the type picker.
+            # data carries the target KEY; the button keeps using the key (so the
+            # disk folder resolves), but the prompt shows the clean username.
+            key = data[len("imgsel:"):]
+            clean = _targets.get(key, {}).get("username", key) if chat_id is None else resolve_username_and_key(key, chat_id)[0]
             bot.answer_callback_query(call.id)
             if chat_id is not None:
-                bot.send_message(chat_id, f"Which image type for @{username}?", reply_markup=image_type_keyboard(username))
+                bot.send_message(chat_id, f"Which image type for @{clean}?", reply_markup=image_type_keyboard(key))
 
         elif data.startswith("img:"):
-            # img:<username>:<type>
+            # img:<key-or-username>:<type>
             rest = data[len("img:"):]
-            username, _, image_type = rest.partition(":")
-            bot.answer_callback_query(call.id, f"Fetching {image_type} for @{username}...")
-            error = deliver_image(chat_id, username, image_type) if chat_id is not None else "❌ Lost chat context."
+            identifier, _, image_type = rest.partition(":")
+            clean = resolve_username_and_key(identifier, chat_id)[0] if chat_id is not None else identifier
+            bot.answer_callback_query(call.id, f"Fetching {image_type} for @{clean}...")
+            error = deliver_image(chat_id, identifier, image_type) if chat_id is not None else "❌ Lost chat context."
             if error and chat_id is not None:
                 bot.send_message(chat_id, error)
 
