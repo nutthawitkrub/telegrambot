@@ -59,7 +59,7 @@ class TestTailLogAndForward:
                 return True
             stop_event.wait = fake_wait
 
-        main.tail_log_and_forward(username, log_file, stop_event)
+        main.tail_log_and_forward(username, username, log_file, stop_event)
 
     def test_forwards_lines_to_telegram(self, mock_bot, tmp_path, monkeypatch):
         log_file = tmp_path / "instagram_monitor_natgeo.log"
@@ -83,7 +83,7 @@ class TestTailLogAndForward:
         main._targets["natgeo"] = _make_target_entry(MagicMock(), stop_event)
         # Make wait set the stop_event so the loop exits quickly
         stop_event.wait = lambda t=None: stop_event.set() or True
-        main.tail_log_and_forward("natgeo", log_file, stop_event)
+        main.tail_log_and_forward("natgeo", "natgeo", log_file, stop_event)
         assert True  # no crash
 
     def test_warns_after_30s_timeout(self, mock_bot, tmp_path, monkeypatch):
@@ -107,7 +107,7 @@ class TestTailLogAndForward:
         stop_event.wait = fake_wait
         mock_bot.send_message.side_effect = lambda cid, text, *a, **kw: warned.append(text)
 
-        main.tail_log_and_forward("natgeo", log_file, stop_event)
+        main.tail_log_and_forward("natgeo", "natgeo", log_file, stop_event)
         if warned:
             assert any("30" in w or "log" in w.lower() for w in warned)
 
@@ -125,6 +125,21 @@ class TestTailLogAndForward:
         for c in mock_bot.send_message.call_args_list:
             text = c[0][1] if c[0] else ""
             assert text.strip()
+
+    def test_per_device_prefix_uses_clean_username_not_key(self, mock_bot, tmp_path):
+        """Per-device key (natgeo_100) must NOT leak into the [prefix]; show [natgeo]."""
+        db.upsert_target("natgeo", 100, "tester")
+        key = "natgeo_100"
+        stop_event = threading.Event()
+        main._targets[key] = _make_target_entry(MagicMock(), stop_event)
+        stop_event.wait = lambda t=None: stop_event.set() or True
+        log_file = tmp_path / "instagram_monitor_natgeo.log"
+        log_file.write_text("hello\n")
+        # key=natgeo_100 but username=natgeo
+        main.tail_log_and_forward(key, "natgeo", log_file, stop_event)
+        all_text = " ".join(str(c) for c in mock_bot.send_message.call_args_list)
+        assert "[natgeo]" in all_text
+        assert "natgeo_100" not in all_text
 
 
 # ── watch_media_and_forward ───────────────────────────────────────────────────
@@ -157,7 +172,7 @@ class TestWatchMediaAndForward:
         main._targets["natgeo"]["stop_event"] = stop_event
         media_file = tdir / "instagram_natgeo_post_20240101_120000.jpg"
         media_file.write_bytes(b"\xff\xd8img")
-        main.watch_media_and_forward("natgeo", stop_event)
+        main.watch_media_and_forward("natgeo", "natgeo", stop_event)
         mock_bot.send_photo.assert_called_once()
 
     def test_pre_existing_files_not_sent(self, mock_bot, tmp_path):
@@ -166,9 +181,24 @@ class TestWatchMediaAndForward:
         media_file.write_bytes(b"\xff\xd8img")
         stop_event = threading.Event()
         stop_event.set()
-        main.watch_media_and_forward("natgeo", stop_event)
+        main.watch_media_and_forward("natgeo", "natgeo", stop_event)
         mock_bot.send_photo.assert_not_called()
         mock_bot.send_video.assert_not_called()
+
+    def test_per_device_key_still_sends_media(self, mock_bot, tmp_path, monkeypatch):
+        """Per-device key (natgeo_100): files are named with the clean username,
+        so glob patterns must use the username, not the key, or nothing sends."""
+        key = "natgeo_100"
+        tdir = main.MONITORS_DIR / key       # data lives under the key dir
+        tdir.mkdir(parents=True, exist_ok=True)
+        db.upsert_target("natgeo", 100, "tester")
+        stop_event = _one_shot_stop_event()
+        main._targets[key] = _make_target_entry(MagicMock(), stop_event)
+        self._no_seed_amp(monkeypatch)
+        media_file = tdir / "instagram_natgeo_post_20260630_030645.jpg"
+        media_file.write_bytes(b"\xff\xd8img")
+        main.watch_media_and_forward(key, "natgeo", stop_event)
+        mock_bot.send_photo.assert_called_once()
 
     def test_stores_new_media_in_db(self, mock_bot, tmp_path, monkeypatch):
         tdir = self._setup_dir()
@@ -177,7 +207,7 @@ class TestWatchMediaAndForward:
         main._targets["natgeo"]["stop_event"] = stop_event
         media_file = tdir / "instagram_natgeo_profile_pic.jpg"
         media_file.write_bytes(b"\xff\xd8profile")
-        main.watch_media_and_forward("natgeo", stop_event)
+        main.watch_media_and_forward("natgeo", "natgeo", stop_event)
         result = db.get_latest_media("natgeo", "profile")
         assert result is not None
 
@@ -188,13 +218,13 @@ class TestWatchMediaAndForward:
         main._targets["natgeo"]["stop_event"] = stop_event
         media_file = tdir / "instagram_natgeo_reel_20240101_120000.mp4"
         media_file.write_bytes(b"fake_mp4")
-        main.watch_media_and_forward("natgeo", stop_event)
+        main.watch_media_and_forward("natgeo", "natgeo", stop_event)
         mock_bot.send_video.assert_called_once()
 
     def test_handles_missing_dir_gracefully(self, mock_bot):
         stop_event = threading.Event()
         stop_event.set()
-        main.watch_media_and_forward("ghost_user", stop_event)
+        main.watch_media_and_forward("ghost_user", "ghost_user", stop_event)
 
 
 # ── watch_process_health ──────────────────────────────────────────────────────
@@ -212,19 +242,19 @@ class TestWatchProcessHealth:
 
     def test_notifies_crash(self, mock_bot, tmp_path):
         proc, stop_event = self._setup(exit_code=2, wait_returns=False)
-        main.watch_process_health("natgeo", proc, stop_event)
+        main.watch_process_health("natgeo", "natgeo", proc, stop_event)
         mock_bot.send_message.assert_called()
         msg_text = mock_bot.send_message.call_args[0][1]
         assert "🔴" in msg_text or "stopped" in msg_text.lower()
 
     def test_removes_from_targets_on_crash(self, mock_bot, tmp_path):
         proc, stop_event = self._setup(wait_returns=False)
-        main.watch_process_health("natgeo", proc, stop_event)
+        main.watch_process_health("natgeo", "natgeo", proc, stop_event)
         assert "natgeo" not in main._targets
 
     def test_deactivates_target_in_db(self, mock_bot, tmp_path):
         proc, stop_event = self._setup(wait_returns=False)
-        main.watch_process_health("natgeo", proc, stop_event)
+        main.watch_process_health("natgeo", "natgeo", proc, stop_event)
         rows = db.load_active_targets()
         assert not any(r["username"] == "natgeo" for r in rows)
 
@@ -233,7 +263,7 @@ class TestWatchProcessHealth:
         stderr_file = main.MONITORS_DIR / "natgeo" / "instagram_monitor_natgeo.stderr.log"
         stderr_file.parent.mkdir(parents=True, exist_ok=True)
         stderr_file.write_text("Traceback:\n  ImportError: no module named x\n")
-        main.watch_process_health("natgeo", proc, stop_event)
+        main.watch_process_health("natgeo", "natgeo", proc, stop_event)
         msg_text = mock_bot.send_message.call_args[0][1]
         assert "ImportError" in msg_text or "stderr" in msg_text.lower()
 
@@ -241,7 +271,7 @@ class TestWatchProcessHealth:
         """stop_event set (intentional stop) → no crash notification."""
         proc, stop_event = self._setup(exit_code=None, wait_returns=True)
         proc.poll.return_value = None   # still alive
-        main.watch_process_health("natgeo", proc, stop_event)
+        main.watch_process_health("natgeo", "natgeo", proc, stop_event)
         for c in mock_bot.send_message.call_args_list:
             text = c[0][1] if c[0] else ""
             assert "🔴" not in text

@@ -364,7 +364,7 @@ def _broadcast(key: str, text: str) -> None:
             pass
 
 
-def tail_log_and_forward(key: str, log_file: Path, stop_event: threading.Event) -> None:
+def tail_log_and_forward(key: str, username: str, log_file: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wait for the log file to appear, then forward every
     line written to it to ALL currently-subscribed chats, until stop_event
@@ -375,7 +375,7 @@ def tail_log_and_forward(key: str, log_file: Path, stop_event: threading.Event) 
     open file handle before the folder-deletion step runs (fixes the
     Windows [WinError 32] locked-file error).
     """
-    ig_username = _targets.get(key, {}).get("username", key)
+    ig_username = username
     waited = 0.0
     while not log_file.exists() and not stop_event.is_set():
         stop_event.wait(0.5)
@@ -486,13 +486,13 @@ def send_media_file(chat_id: int, username: str, media_path: Path, label: str) -
         bot.send_message(chat_id, f"[{username}] Failed to auto-send new {label} file {media_path.name}: {e}")
 
 
-def watch_media_and_forward(key: str, stop_event: threading.Event) -> None:
+def watch_media_and_forward(key: str, username: str, stop_event: threading.Event) -> None:
     """
     Background thread: poll the target's directory for new media files and
     push each one to ALL currently-subscribed chats the moment it appears.
     Pre-existing files at watch-start are recorded but NOT sent.
     """
-    ig_username = _targets.get(key, {}).get("username", key)
+    ig_username = username
     tdir = target_dir(key)
     seen: set[str] = set()
 
@@ -525,14 +525,14 @@ def watch_media_and_forward(key: str, stop_event: threading.Event) -> None:
         stop_event.wait(timeout=5.0)
 
 
-def watch_process_health(key: str, process: subprocess.Popen, stop_event: threading.Event) -> None:
+def watch_process_health(key: str, username: str, process: subprocess.Popen, stop_event: threading.Event) -> None:
     """
     Background thread: poll the subprocess for unexpected exit and notify
     Telegram immediately, including exit code and any captured stderr -
     instead of silently leaving the target "stopped" until someone happens
     to run /status.
     """
-    ig_username = _targets.get(key, {}).get("username", key)
+    ig_username = username
     try:
         print(f"[watchdog] started for @{ig_username} (pid={process.pid})")
         while True:
@@ -660,21 +660,21 @@ def start_tracking(username: str, chat_id: int, started_by: str, shared: bool = 
     log_file = log_path_for(username, key)
     log_thread = threading.Thread(
         target=tail_log_and_forward,
-        args=(key, log_file, stop_event),
+        args=(key, username, log_file, stop_event),
         daemon=True,
     )
     log_thread.start()
 
     media_thread = threading.Thread(
         target=watch_media_and_forward,
-        args=(key, stop_event),
+        args=(key, username, stop_event),
         daemon=True,
     )
     media_thread.start()
 
     watchdog_thread = threading.Thread(
         target=watch_process_health,
-        args=(key, process, stop_event),
+        args=(key, username, process, stop_event),
         daemon=True,
     )
     watchdog_thread.start()
