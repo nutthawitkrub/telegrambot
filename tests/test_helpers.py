@@ -4,6 +4,23 @@ import main
 from tests.conftest import make_message
 
 
+# ── is_private_profile_log ────────────────────────────────────────────────────
+
+class TestIsPrivateProfileLog:
+    def test_detects_private_status_line(self):
+        assert main.is_private_profile_log("Profile:\t\t\t\tprivate") is True
+
+    def test_public_status_line_is_false(self):
+        assert main.is_private_profile_log("Profile:\t\t\t\tpublic") is False
+
+    def test_unrelated_line_mentioning_private_is_false(self):
+        # Must start with 'profile:' — collab-leak notes mention 'private' but aren't the status line.
+        assert main.is_private_profile_log("Detection of collab posts from private accounts") is False
+
+    def test_case_insensitive(self):
+        assert main.is_private_profile_log("PROFILE:   PRIVATE") is True
+
+
 # ── is_valid_username ─────────────────────────────────────────────────────────
 
 class TestIsValidUsername:

@@ -369,6 +369,19 @@ def _broadcast(key: str, text: str) -> None:
             pass
 
 
+def is_private_profile_log(line: str) -> bool:
+    """
+    True if a monitor log line reports the target Instagram account is PRIVATE.
+
+    instagram_monitor prints a per-cycle status line like:
+        Profile:                private
+    We match that specific line (starts with 'profile:' and mentions private)
+    so this bot only ever tracks PUBLIC accounts (public-data-only policy).
+    """
+    s = line.strip().lower()
+    return s.startswith("profile:") and "private" in s
+
+
 def tail_log_and_forward(key: str, username: str, log_file: Path, stop_event: threading.Event) -> None:
     """
     Background thread: wait for the log file to appear, then forward every
@@ -405,6 +418,26 @@ def tail_log_and_forward(key: str, username: str, log_file: Path, stop_event: th
             while not stop_event.is_set():
                 line = f.readline()
                 if line:
+                    # Public-only policy: if the monitor reports the account is
+                    # private, forward the current buffer, tell subscribers, then
+                    # stop this target. Stop runs in a separate thread so we don't
+                    # join ourselves (this IS the log thread).
+                    if is_private_profile_log(line):
+                        buffer.append(line.rstrip("\n"))
+                        _broadcast(key, "\n".join(f"[{ig_username}] {l}" for l in buffer if l.strip()))
+                        _broadcast(
+                            key,
+                            f"🔒 @{ig_username} is a PRIVATE account. This bot tracks "
+                            f"PUBLIC accounts only (public-data policy) — stopping.",
+                        )
+                        with _targets_lock:
+                            info = _targets.get(key)
+                            subs = list(info["subscribers"].keys()) if info else []
+                        for cid in subs:
+                            threading.Thread(
+                                target=stop_tracking, args=(ig_username, cid), daemon=True
+                            ).start()
+                        return
                     buffer.append(line.rstrip("\n"))
                     if len(buffer) >= 20 or (time.monotonic() - last_flush) > 1.0:
                         _broadcast(key, "\n".join(f"[{ig_username}] {l}" for l in buffer if l.strip()))
@@ -849,14 +882,20 @@ def send_welcome(message):
         "Commands:\n"
         "/track - track the pre-configured Instagram user\n"
         "/trackother - track a different user (bot will ask for the username)\n"
-        "/image <username> <profile|post|story> - send the latest downloaded image/video on demand\n"
+        "/image <username> <profile|post> - send the latest downloaded image/video on demand\n"
         "/data <username> - send the full log + CSV activity export\n"
         "/status - list currently tracked users\n"
         "/stop <username> - stop tracking a user AND DELETE all its saved data\n"
         "/cancel - cancel a pending /trackother prompt\n\n"
         "All monitor log output is forwarded here as plain text, prefixed "
-        "with [username]. New profile pics, posts/reels, and stories are "
+        "with [username]. New profile pics and posts/reels are "
         "also pushed here automatically as soon as they're downloaded.\n\n"
+        "🔓 PUBLIC ACCOUNTS ONLY. This tool collects only publicly-available "
+        "profile data for marketing/trend research. Private accounts are "
+        "automatically rejected. Do not use it to harass, stalk, or "
+        "redistribute personal data. You are responsible for complying with "
+        "Instagram's Terms and the privacy/data-protection laws in your "
+        "jurisdiction (e.g. GDPR, PDPA, CCPA).\n\n"
         "⚠️ /stop permanently deletes that username's saved logs, CSV, and "
         "media. Run /data first if you want to keep a copy."
     )
